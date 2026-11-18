@@ -761,12 +761,23 @@ ul.milog-idiom-list li:hover .milog-phrase-head { color: var(--brass); }
   color: var(--ink);
   border-bottom-color: var(--brass);
 }
+/* Result count: a small rounded badge after the dictionary name */
 .result-tab .tab-count {
-  font-weight: 400;
-  font-size: 0.85em;
-  margin-inline-start: 4px;
-  opacity: 0.7;
+  display: inline-block;
+  min-width: 1.7em;
+  padding: 1px 7px;
+  margin-inline-start: 6px;
+  border-radius: 999px;
+  background: var(--brass-dim);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 1px;
 }
+.result-tab.active .tab-count { background: var(--brass); color: var(--ink); }
 .result-tab .tab-count:empty { display: none; }
 
 @media (max-width: 760px) {
