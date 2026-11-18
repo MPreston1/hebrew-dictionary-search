@@ -105,10 +105,18 @@
       <div class="backup-buttons">
         <button type="button" id="relay-test">Save &amp; test</button>
       </div>
+      <div class="backup-status-line" id="relay-cache-status"></div>
+      <div class="backup-buttons">
+        <button type="button" id="relay-cache-send" disabled>Send this device's cache to the Pi</button>
+      </div>
       <div class="help">
         When this device is on your tailnet, lookups go through your Pi, with no public CORS proxy involved.
         Off the tailnet the relay doesn't answer and the proxies are used instead. Leave this blank to always
         use the proxies. Stored only in this browser.
+        While the relay is reachable, searches are also saved to a cache on the Pi that all your devices share,
+        and a search this device hasn't cached is looked up there before going to the dictionary sites.
+        It has the same 3-month lifetime. "Send this device's cache to the Pi" uploads what's already cached
+        here (the newest copy of each item wins).
       </div>
     </div>
     <div class="field">
@@ -130,7 +138,8 @@
         offline) and that exact word hasn't been cached, but it showed up as one of the matches
         in some other cached search, that entry is shown on its own labeled "partial match" rather
         than nothing. Use "Export as JSON" to save a copy of this cache and "Import JSON" to load
-        one back in (importing merges into whatever's already cached here).
+        one back in (importing merges into whatever's already cached here). If the Pi relay is set up, results
+        are also shared through a cache on the Pi (see above).
       </div>
     </div>
     <div class="field">

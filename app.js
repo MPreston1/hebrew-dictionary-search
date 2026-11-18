@@ -32,6 +32,7 @@
     enabled: loadEnabled(),
     relayUrl: loadPref("relayUrl", ""),   // optional Pi relay address (set in Settings)
     relayAvailable: false,                // did the relay answer its last ping?
+    relayCache: false,                    // ...and does it offer the shared cache?
     relayReason: "",                      // why the last ping failed (shown in Settings)
     activeTab: "morfix",
     morfix: { lastResult: null, lastRaw: null },
@@ -68,6 +69,8 @@
     relayUrlField: document.getElementById("relay-url"),
     relayStatus: document.getElementById("relay-status"),
     relayTest: document.getElementById("relay-test"),
+    relayCacheStatus: document.getElementById("relay-cache-status"),
+    relayCacheSend: document.getElementById("relay-cache-send"),
     settingsSave: document.getElementById("settings-save"),
     settingsCancel: document.getElementById("settings-cancel"),
     rawDialog: document.getElementById("raw-dialog"),
@@ -91,6 +94,7 @@
     renderRelayStatus();
     els.dialog.showModal();
     refreshSearchCacheStatus();
+    refreshPiCacheStatus();
   });
   els.settingsCancel.addEventListener("click", () => els.dialog.close());
   els.settingsSave.addEventListener("click", () => {
@@ -101,6 +105,7 @@
     els.dialog.close();
   });
   els.relayTest.addEventListener("click", () => saveRelayUrl());
+  els.relayCacheSend.addEventListener("click", () => sendCacheToPi());
 
   // ---------- Search result cache UI ----------
   async function refreshSearchCacheStatus() {
@@ -336,6 +341,7 @@
 
   function renderRelayStatus() {
     if (els.relayStatus) els.relayStatus.textContent = relayStatusText();
+    if (els.dialog && els.dialog.open) refreshPiCacheStatus();
   }
 
   // Ask the relay whether it is there. Fails quietly when it isn't.
@@ -344,6 +350,7 @@
     relayCheckPromise = (async () => {
       const base = getRelayBase();
       let ok = false;
+      let cacheOk = false;
       state.relayReason = "";
       if (base) {
         const ctrl = new AbortController();
@@ -356,6 +363,7 @@
             const j = await r.json();
             if (j.ok === true && j.service === "dictionary-relay" && Array.isArray(j.features) && j.features.includes("fetch")) {
               ok = true;
+              cacheOk = j.features.includes("cache");
             } else if (j.service === "ceyd-relay") {
               state.relayReason = "that's the old relay - update and restart it";
             } else {
@@ -370,6 +378,7 @@
         clearTimeout(timer);
       }
       state.relayAvailable = ok;
+      state.relayCache = ok && cacheOk;
       renderRelayStatus();
       return ok;
     })().finally(() => { relayCheckPromise = null; });
@@ -602,7 +611,7 @@
         state.morfix.lastResult = cached.result;
         els.viewRawMorfix.hidden = true;
         renderMorfix(cached.result);
-        els.statusMorfix.textContent = `cached · retrieved ${formatCacheDate(cached.retrievedAt)}`;
+        els.statusMorfix.textContent = `cached · retrieved ${formatCacheDate(cached.retrievedAt)}${cached.fromPi ? " · from your Pi" : ""}`;
         els.refreshMorfix.hidden = false;
         return;
       }
@@ -657,6 +666,166 @@
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"));
     });
+  }
+
+  // ---------- Shared cache on the Pi (optional) ----------
+  // Layered on top of the device cache below. A search this device hasn't cached is
+  // looked up on the Pi first (another device may have done it), and everything this
+  // device saves is also sent to the Pi. It only runs while the relay answers its ping
+  // and says it has the cache; otherwise this device's own cache works as before.
+  // Records are the device cache's own records, and the same 3-month lifetime applies.
+  const PI_CACHE_GET_TIMEOUT_MS = 5000;
+  const PI_CACHE_PUT_TIMEOUT_MS = 20000;
+  const PI_CACHE_POST_MAX_CHARS = 3000000;   // per upload, well under the relay's 10 MB limit
+  const PI_CACHE_POST_MAX_RECORDS = 500;     // the relay's limit per kind of record per upload
+
+  function piCacheOn() {
+    return state.relayAvailable && state.relayCache && !!getRelayBase();
+  }
+
+  // A network-level failure means the relay has gone away (left the tailnet, Pi off).
+  function piCacheNetworkFailure(err) {
+    if (err && err.name !== "AbortError") { state.relayAvailable = false; renderRelayStatus(); }
+  }
+
+  // GET a cache path; the parsed JSON, or null for a miss or any failure.
+  async function piCacheGet(path) {
+    if (relayCheckPromise) await relayCheckPromise;
+    if (!piCacheOn()) return null;
+    try {
+      const r = await fetchWithTimeout(`${getRelayBase()}/api/cache/${path}`, {}, PI_CACHE_GET_TIMEOUT_MS);
+      return r.ok ? await r.json() : null;
+    } catch (err) {
+      piCacheNetworkFailure(err);
+      return null;
+    }
+  }
+
+  async function piCachePut(payload) {
+    if (!piCacheOn()) return false;
+    try {
+      const r = await fetchWithTimeout(`${getRelayBase()}/api/cache/put`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+      }, PI_CACHE_PUT_TIMEOUT_MS);
+      return r.ok;
+    } catch (err) {
+      piCacheNetworkFailure(err);
+      return false;
+    }
+  }
+
+  // Splits records into uploads small enough for the relay: [{ [kind]: [...] }, ...]
+  function batchBySize(list, kind) {
+    const batches = [];
+    let current = [], size = 0;
+    for (const rec of list) {
+      const len = JSON.stringify(rec).length;
+      if (current.length && (size + len > PI_CACHE_POST_MAX_CHARS || current.length >= PI_CACHE_POST_MAX_RECORDS)) {
+        batches.push({ [kind]: current });
+        current = [];
+        size = 0;
+      }
+      current.push(rec);
+      size += len;
+    }
+    if (current.length) batches.push({ [kind]: current });
+    return batches;
+  }
+
+  // Entries go first, so a search stored on the Pi never points at an entry that isn't there yet.
+  function piUploadBatches(results, entries) {
+    return [...batchBySize(entries || [], "entries"), ...batchBySize(results || [], "results")];
+  }
+
+  async function pushToPi(results, entries) {
+    for (const batch of piUploadBatches(results, entries)) {
+      if (!(await piCachePut(batch))) return false;
+    }
+    return true;
+  }
+
+  // Puts records fetched from the Pi into this device's own cache.
+  async function storeCacheRecords(results, entries) {
+    const db = await openSearchCacheDb();
+    const tx = db.transaction(["results", "entries"], "readwrite");
+    (results || []).forEach(r => tx.objectStore("results").put(r));
+    (entries || []).forEach(e => tx.objectStore("entries").put(e));
+    await idbTxDone(tx);
+  }
+
+  // Looks for this search on the Pi and copies it here. True if something fresh arrived.
+  async function pullResultFromPi(source, word) {
+    const bundle = await piCacheGet(`result?key=${encodeURIComponent(searchCacheKey(source, word))}`);
+    const record = bundle && bundle.record;
+    if (!record || typeof record.key !== "string" || isSearchCacheStale(record.retrievedAt)) return false;
+    try {
+      await storeCacheRecords([record], Array.isArray(bundle.entries) ? bundle.entries : []);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // The same for the partial-match fallback: entries filed under this headword.
+  async function pullHeadwordFromPi(source, word) {
+    const key = `${source}::${normalizeHeadwordKey(word)}`;
+    const bundle = await piCacheGet(`headword?key=${encodeURIComponent(key)}`);
+    const entries = bundle && Array.isArray(bundle.entries)
+      ? bundle.entries.filter(e => e && typeof e.key === "string") : [];
+    if (!entries.length) return false;
+    try {
+      await storeCacheRecords([], entries);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function refreshPiCacheStatus() {
+    const el = els.relayCacheStatus;
+    if (!el) return;
+    els.relayCacheSend.disabled = !piCacheOn();
+    if (!getRelayBase() || !state.relayAvailable) { el.textContent = ""; return; }
+    if (!state.relayCache) {
+      el.textContent = "This relay doesn't have the shared cache yet. Update and restart it.";
+      return;
+    }
+    const s = await piCacheGet("stats");
+    el.textContent = s
+      ? `Shared cache: ${s.results} search${s.results === 1 ? "" : "es"} and ${s.entries} entr${s.entries === 1 ? "y" : "ies"} on the Pi.`
+      : "Couldn't read the shared cache.";
+  }
+
+  // Sends everything fresh in this device's cache to the Pi (newest copy wins there).
+  async function sendCacheToPi() {
+    const btn = els.relayCacheSend;
+    if (!piCacheOn()) {
+      alert("The Pi relay isn't reachable right now. Connect to your tailnet and try again.");
+      return;
+    }
+    const label = btn.textContent;
+    btn.disabled = true;
+    try {
+      const fresh = r => r && !isSearchCacheStale(r.retrievedAt);
+      const entries = (await getAllEntryRecords()).filter(fresh);
+      const results = (await getAllCachedSearchResults()).filter(fresh);
+      if (!entries.length && !results.length) {
+        alert("This device has nothing cached yet.");
+        return;
+      }
+      const batches = piUploadBatches(results, entries);
+      let done = 0;
+      for (const batch of batches) {
+        btn.textContent = `Sending… ${++done}/${batches.length}`;
+        if (!(await piCachePut(batch))) throw new Error("the Pi didn't accept an upload. Is the relay up to date?");
+      }
+      alert(`Sent ${results.length} search${results.length === 1 ? "" : "es"} and ${entries.length} entr${entries.length === 1 ? "y" : "ies"} to the Pi.`);
+    } catch (e) {
+      alert(`Couldn't send the cache: ${e.message}`);
+    } finally {
+      btn.textContent = label;
+      await refreshPiCacheStatus();
+    }
   }
 
   // ---------- Search results cache (IndexedDB) ----------
@@ -846,6 +1015,17 @@
   // in an existing browser's cache from before this change), the record
   // already carries its `result` inline, and is returned as-is.
   async function getCachedSearchResult(source, word) {
+    const local = await getLocalCachedSearchResult(source, word);
+    if (local) return local;
+    // Not on this device (or stale here): the Pi may have it from another device.
+    if (await pullResultFromPi(source, word)) {
+      const copied = await getLocalCachedSearchResult(source, word);
+      if (copied) return { ...copied, fromPi: true };
+    }
+    return null;
+  }
+
+  async function getLocalCachedSearchResult(source, word) {
     try {
       const db = await openSearchCacheDb();
       const key = searchCacheKey(source, word);
@@ -879,12 +1059,14 @@
         const tx = db.transaction("results", "readwrite");
         tx.objectStore("results").put(record);
         await idbTxDone(tx);
+        pushToPi([record], []);   // shared copy; not awaited, a search never waits on the Pi
         return;
       }
 
       const { extra, items } = decomposeResult(source, result);
       const tx = db.transaction(["results", "entries"], "readwrite");
       const entriesStore = tx.objectStore("entries");
+      const entryRecords = [];
       const itemKeys = items.map((item, idx) => {
         const uid = entryUniqueId(source, item.data);
         // An entry with no ID the source itself gave us can't be reliably
@@ -895,22 +1077,26 @@
           ? `${source}::id::${uid}`
           : `${source}::__noid::${normalizeSearchCacheQuery(word)}::${idx}`;
         const normalizedHeadword = normalizeHeadwordKey(item.headword);
-        entriesStore.put({
+        const entryRecord = {
           key, source, headword: item.headword,
           headwordKey: normalizedHeadword ? `${source}::${normalizedHeadword}` : null,
           kind: item.kind, data: item.data, retrievedAt, sourceQuery: word.trim()
-        });
+        };
+        entriesStore.put(entryRecord);
+        entryRecords.push(entryRecord);
         return key;
       });
-      tx.objectStore("results").put({
+      const resultRecord = {
         key: searchCacheKey(source, word),
         source,
         query: word.trim(),
         retrievedAt,
         extra,
         itemKeys
-      });
+      };
+      tx.objectStore("results").put(resultRecord);
       await idbTxDone(tx);
+      pushToPi([resultRecord], entryRecords);   // shared copy; not awaited, a search never waits on the Pi
     } catch (e) { /* ignore — caching is best-effort, not critical to a search succeeding */ }
   }
 
@@ -1050,7 +1236,10 @@
     // than by headword text is that more than one genuinely distinct entry
     // (a noun and a name spelled the same; two words that differ only in
     // nikud) can share a single normalized headword.
-    const entries = (await getEntriesByHeadword(source, word)).filter(e => !isSearchCacheStale(e.retrievedAt));
+    let entries = (await getEntriesByHeadword(source, word)).filter(e => !isSearchCacheStale(e.retrievedAt));
+    if (!entries.length && await pullHeadwordFromPi(source, word)) {
+      entries = (await getEntriesByHeadword(source, word)).filter(e => !isSearchCacheStale(e.retrievedAt));
+    }
     if (!entries.length) return null;
     // Rendering each source's result needs certain top-level fields to be
     // present and truthy (Morfix's "matched", Milog's "found") — supply
@@ -1540,7 +1729,7 @@
             if (cached.result.kind === "verb") entry.tableNode = buildVerbTablesNode(cached.result.cells);
             else if (cached.result.kind === "table") entry.tableNode = parseHtmlFragmentToNode(cached.result.html);
             else entry.tableNode = null;
-            cacheNote = `cached · retrieved ${formatCacheDate(cached.retrievedAt)}`;
+            cacheNote = `cached · retrieved ${formatCacheDate(cached.retrievedAt)}${cached.fromPi ? " · from your Pi" : ""}`;
           } else {
             const { html } = await fetchPealimPage(entry.dictUrl);
             state.pealim.lastRawHtml = html;
@@ -1596,7 +1785,7 @@
         state.pealim.lastResult = cached.result;
         els.viewRawPealim.hidden = true;
         renderPealim(cached.result);
-        els.statusPealim.textContent = `cached · retrieved ${formatCacheDate(cached.retrievedAt)}`;
+        els.statusPealim.textContent = `cached · retrieved ${formatCacheDate(cached.retrievedAt)}${cached.fromPi ? " · from your Pi" : ""}`;
         els.refreshPealim.hidden = false;
         return;
       }
@@ -1993,7 +2182,7 @@
         state.milog.lastResult = cached.result;
         els.viewRawMilog.hidden = true;
         renderMilog(cached.result);
-        els.statusMilog.textContent = `cached · retrieved ${formatCacheDate(cached.retrievedAt)}`;
+        els.statusMilog.textContent = `cached · retrieved ${formatCacheDate(cached.retrievedAt)}${cached.fromPi ? " · from your Pi" : ""}`;
         els.refreshMilog.hidden = false;
         return;
       }
