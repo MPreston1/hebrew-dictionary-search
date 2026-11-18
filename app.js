@@ -90,7 +90,7 @@
 
   els.openSettings.addEventListener("click", () => {
     els.firebaseKeyField.value = state.firebaseKey;
-    els.relayUrlField.value = getRelayBase();
+    els.relayUrlField.value = getSavedRelay();
     renderRelayStatus();
     els.dialog.showModal();
     refreshSearchCacheStatus();
@@ -101,7 +101,7 @@
     state.firebaseKey = els.firebaseKeyField.value.trim();
     state.token = null;
     // Save the relay address too if it was edited (Save & test does the same, with a visible check).
-    if (els.relayUrlField.value.trim().replace(/\/+$/, "") !== getRelayBase()) saveRelayUrl();
+    if (els.relayUrlField.value.trim().replace(/\/+$/, "") !== getSavedRelay()) saveRelayUrl();
     els.dialog.close();
   });
   els.relayTest.addEventListener("click", () => saveRelayUrl());
@@ -329,13 +329,24 @@
   const RELAY_FETCH_TIMEOUT_MS = 15000;
   let relayCheckPromise = null;
 
-  function getRelayBase() {
+  // The address typed in Settings. Blank when this page is served by the Pi itself.
+  function getSavedRelay() {
     return String(state.relayUrl || "").trim().replace(/\/+$/, "");
+  }
+
+  // The relay to use: the saved address or, on a page the relay serves itself
+  // (it adds window.PI_HOSTED), that same server.
+  function getRelayBase() {
+    return getSavedRelay() || (window.PI_HOSTED ? window.location.origin : "");
   }
 
   function relayStatusText() {
     if (!getRelayBase()) return "Not set up. Lookups use the public CORS proxies.";
-    if (state.relayAvailable) return "Connected. Lookups go through your Pi first, with the public proxies as a fallback.";
+    if (state.relayAvailable) {
+      return window.PI_HOSTED && !getSavedRelay()
+        ? "Connected. This page is served by your Pi, so lookups go through it first, with the public proxies as a fallback."
+        : "Connected. Lookups go through your Pi first, with the public proxies as a fallback.";
+    }
     return `Can't reach the relay (${state.relayReason || "is Tailscale on?"}). Lookups use the public CORS proxies.`;
   }
 
@@ -393,8 +404,8 @@
     state.relayUrl = v;
     savePref("relayUrl", v);
     state.relayAvailable = false;
-    els.relayStatus.textContent = v ? "Checking…" : relayStatusText();
-    if (v) await checkRelay();
+    els.relayStatus.textContent = getRelayBase() ? "Checking…" : relayStatusText();
+    if (getRelayBase()) await checkRelay();
   }
 
   // One lookup through the relay: the target URL goes in the query string, and only
@@ -2318,6 +2329,7 @@
   });
 
   // ---------- Pi relay: check on load and whenever the network may have changed ----------
+  if (window.PI_HOSTED) els.relayUrlField.placeholder = "Leave blank: this page is served by your Pi";
   window.addEventListener("online", checkRelay);
   window.addEventListener("offline", () => { state.relayAvailable = false; renderRelayStatus(); });
   document.addEventListener("visibilitychange", () => {
