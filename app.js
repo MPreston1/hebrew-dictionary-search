@@ -30,6 +30,9 @@
     tokenExpiresAt: 0,
     showGloss: loadPref("showGloss", false),
     enabled: loadEnabled(),
+    relayUrl: loadPref("relayUrl", ""),   // optional Pi relay address (set in Settings)
+    relayAvailable: false,                // did the relay answer its last ping?
+    relayReason: "",                      // why the last ping failed (shown in Settings)
     activeTab: "morfix",
     morfix: { lastResult: null, lastRaw: null },
     pealim: { lastResult: null, lastRawHtml: null },
@@ -62,6 +65,9 @@
     openSettings: document.getElementById("open-settings"),
     dialog: document.getElementById("settings-dialog"),
     firebaseKeyField: document.getElementById("firebase-key"),
+    relayUrlField: document.getElementById("relay-url"),
+    relayStatus: document.getElementById("relay-status"),
+    relayTest: document.getElementById("relay-test"),
     settingsSave: document.getElementById("settings-save"),
     settingsCancel: document.getElementById("settings-cancel"),
     rawDialog: document.getElementById("raw-dialog"),
@@ -81,6 +87,8 @@
 
   els.openSettings.addEventListener("click", () => {
     els.firebaseKeyField.value = state.firebaseKey;
+    els.relayUrlField.value = getRelayBase();
+    renderRelayStatus();
     els.dialog.showModal();
     refreshSearchCacheStatus();
   });
@@ -88,8 +96,11 @@
   els.settingsSave.addEventListener("click", () => {
     state.firebaseKey = els.firebaseKeyField.value.trim();
     state.token = null;
+    // Save the relay address too if it was edited (Save & test does the same, with a visible check).
+    if (els.relayUrlField.value.trim().replace(/\/+$/, "") !== getRelayBase()) saveRelayUrl();
     els.dialog.close();
   });
+  els.relayTest.addEventListener("click", () => saveRelayUrl());
 
   // ---------- Search result cache UI ----------
   async function refreshSearchCacheStatus() {
@@ -281,6 +292,105 @@
     return state.token;
   }
 
+  // ---------- Pi relay (optional) ----------
+  // If a relay address is saved and the relay answers its ping (which only happens
+  // while this device is on your tailnet), lookups go through the Pi first. If it
+  // doesn't answer, or a relayed request fails, the public CORS proxies below take
+  // over exactly as before.
+  const RELAY_PING_TIMEOUT_MS = 3000;
+  const RELAY_FETCH_TIMEOUT_MS = 15000;
+  let relayCheckPromise = null;
+
+  function getRelayBase() {
+    return String(state.relayUrl || "").trim().replace(/\/+$/, "");
+  }
+
+  function relayStatusText() {
+    if (!getRelayBase()) return "Not set up. Lookups use the public CORS proxies.";
+    if (state.relayAvailable) return "Connected. Lookups go through your Pi first, with the public proxies as a fallback.";
+    return `Can't reach the relay (${state.relayReason || "is Tailscale on?"}). Lookups use the public CORS proxies.`;
+  }
+
+  function renderRelayStatus() {
+    if (els.relayStatus) els.relayStatus.textContent = relayStatusText();
+  }
+
+  // Ask the relay whether it is there. Fails quietly when it isn't.
+  function checkRelay() {
+    if (relayCheckPromise) return relayCheckPromise;   // a check is already running
+    relayCheckPromise = (async () => {
+      const base = getRelayBase();
+      let ok = false;
+      state.relayReason = "";
+      if (base) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), RELAY_PING_TIMEOUT_MS);
+        try {
+          const r = await fetch(base + "/api/ping", { signal: ctrl.signal, cache: "no-store" });
+          if (!r.ok) {
+            state.relayReason = `the relay answered HTTP ${r.status}` + (r.status === 404 ? " - is it updated and restarted?" : "");
+          } else {
+            const j = await r.json();
+            if (j.ok === true && j.service === "dictionary-relay" && Array.isArray(j.features) && j.features.includes("fetch")) {
+              ok = true;
+            } else if (j.service === "ceyd-relay") {
+              state.relayReason = "that's the old relay - update and restart it";
+            } else {
+              state.relayReason = "unexpected reply from that address";
+            }
+          }
+        } catch (e) {
+          state.relayReason = e.name === "AbortError"
+            ? `no answer within ${RELAY_PING_TIMEOUT_MS / 1000} seconds - is Tailscale on?`
+            : "blocked or unreachable - not on Tailscale, or the browser refused the cross-site request";
+        }
+        clearTimeout(timer);
+      }
+      state.relayAvailable = ok;
+      renderRelayStatus();
+      return ok;
+    })().finally(() => { relayCheckPromise = null; });
+    return relayCheckPromise;
+  }
+
+  async function saveRelayUrl() {
+    let v = els.relayUrlField.value.trim().replace(/\/+$/, "");
+    if (v && !/^https?:\/\//i.test(v)) v = "https://" + v;
+    els.relayUrlField.value = v;
+    if (relayCheckPromise) await relayCheckPromise;     // let any check for the old address finish first
+    state.relayUrl = v;
+    savePref("relayUrl", v);
+    state.relayAvailable = false;
+    els.relayStatus.textContent = v ? "Checking…" : relayStatusText();
+    if (v) await checkRelay();
+  }
+
+  // One lookup through the relay: the target URL goes in the query string, and only
+  // Authorization/Accept are passed along (as X-Target-* headers).
+  function relayAttempt(url, headers) {
+    return {
+      name: "Pi relay",
+      fetch: async () => {
+        const fwd = {};
+        for (const [name, value] of Object.entries(headers)) {
+          const lower = name.toLowerCase();
+          if (lower === "authorization") fwd["X-Target-Authorization"] = value;
+          else if (lower === "accept") fwd["X-Target-Accept"] = value;
+        }
+        try {
+          return await fetchWithTimeout(
+            `${getRelayBase()}/api/fetch?url=${encodeURIComponent(url)}`,
+            { headers: fwd }, RELAY_FETCH_TIMEOUT_MS);
+        } catch (err) {
+          // Network-level failure: the relay has gone away (left the tailnet, Pi off).
+          // Stop trying it until the next check; the proxies take this lookup.
+          if (err.name !== "AbortError") { state.relayAvailable = false; renderRelayStatus(); }
+          throw err;
+        }
+      }
+    };
+  }
+
   // ---------- Generic CORS fallback chain ----------
   // corsproxy.io goes first: it's the only proxy here that can forward custom
   // headers (needed for Morfix's Authorization). The others are fallbacks in
@@ -289,6 +399,9 @@
   // (allorigins, codetabs) return their own 200 OK even when the upstream
   // body is an error page, so HTTP status alone isn't trustworthy.
   async function fetchWithCorsFallback(url, { headers = {}, parseAndValidate }) {
+    // If the first ping is still in flight, wait for it (at most a few seconds) so the
+    // relay isn't skipped just because it hasn't answered yet.
+    if (relayCheckPromise) await relayCheckPromise;
     const attempts = [
       //{ name: 'corsproxy.io', fetch: () => fetchWithTimeout(`https://corsproxy.io/?key=46e13d75&url=${encodeURIComponent(url)}`, { headers }, 9000) },
       { name: 'corsproxy.io', fetch: () => {
@@ -306,6 +419,7 @@
       { name: 'allorigins',   fetch: () => fetchWithTimeout(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, {}, 9000) },
       { name: 'codetabs',     fetch: () => fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, {}, 9000) },
     ];
+    if (state.relayAvailable && getRelayBase()) attempts.unshift(relayAttempt(url, headers));
     const errors = [];
     for (const attempt of attempts) {
       try {
@@ -1984,4 +2098,12 @@
   els.refreshMilog.addEventListener("click", () => {
     if (els.input.value.trim()) doMilogSearch(els.input.value, { forceRefresh: true });
   });
+
+  // ---------- Pi relay: check on load and whenever the network may have changed ----------
+  window.addEventListener("online", checkRelay);
+  window.addEventListener("offline", () => { state.relayAvailable = false; renderRelayStatus(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") checkRelay();
+  });
+  checkRelay();
 })();

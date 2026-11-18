@@ -99,6 +99,19 @@
       <div class="help">Used only to obtain an anonymous auth token, the same way Morfix's own frontend does. Not a secret — this key just identifies the Firebase project. Pealim needs no key at all — it's a plain page fetch.</div>
     </div>
     <div class="field">
+      <label for="relay-url">Pi relay address (optional)</label>
+      <input type="text" id="relay-url" inputmode="url" placeholder="https://your-pi.your-tailnet.ts.net" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <div class="backup-status-line" id="relay-status"></div>
+      <div class="backup-buttons">
+        <button type="button" id="relay-test">Save &amp; test</button>
+      </div>
+      <div class="help">
+        When this device is on your tailnet, lookups go through your Pi, with no public CORS proxy involved.
+        Off the tailnet the relay doesn't answer and the proxies are used instead. Leave this blank to always
+        use the proxies. Stored only in this browser.
+      </div>
+    </div>
+    <div class="field">
       <label>Search result cache</label>
       <div class="backup-status-line" id="search-cache-status">Checking cache…</div>
       <div class="backup-buttons">
@@ -122,10 +135,11 @@
     </div>
     <div class="field">
       <div class="help">
-        Both dictionaries search through a chain of CORS routes: corsproxy.io first, then a direct request, then
-        allorigins and codetabs as fallbacks. Morfix additionally requires its bearer token to be forwarded, which
-        only corsproxy.io and the direct attempt can carry — so if corsproxy.io ever goes down or gets rate-limited,
-        Morfix searches may fail even while Pealim's still work fine.
+        Lookups try your Pi relay first when it's set up and reachable. Otherwise (or if it fails) they search
+        through a chain of public CORS routes: corsproxy.io first, then a direct request, then allorigins and
+        codetabs as fallbacks. Morfix additionally requires its bearer token to be forwarded, which only the Pi
+        relay, corsproxy.io and the direct attempt can carry — so off the tailnet, if corsproxy.io ever goes down
+        or gets rate-limited, Morfix searches may fail even while Pealim's still work fine.
       </div>
     </div>
     <div class="dialog-actions">
