@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0" />
 <title>Hebrew Dictionary Search</title>
 <meta name="theme-color" content="#1B2A4A" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -38,9 +38,9 @@
 
   <!-- Phone-width tabs (shown by CSS when two or more dictionaries are on) -->
   <div id="result-tabs" role="tablist">
-    <button type="button" role="tab" class="result-tab active" id="tab-morfix" aria-selected="true">Morfix</button>
-    <button type="button" role="tab" class="result-tab" id="tab-pealim" aria-selected="false">Pealim</button>
-    <button type="button" role="tab" class="result-tab" id="tab-milog" aria-selected="false">Milog</button>
+    <button type="button" role="tab" class="result-tab active" id="tab-morfix" aria-selected="true">Morfix <span class="tab-count" id="tabcount-morfix"></span></button>
+    <button type="button" role="tab" class="result-tab" id="tab-pealim" aria-selected="false">Pealim <span class="tab-count" id="tabcount-pealim"></span></button>
+    <button type="button" role="tab" class="result-tab" id="tab-milog" aria-selected="false">Milog <span class="tab-count" id="tabcount-milog"></span></button>
   </div>
 
   <div class="dict-columns">

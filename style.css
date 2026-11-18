@@ -761,6 +761,13 @@ ul.milog-idiom-list li:hover .milog-phrase-head { color: var(--brass); }
   color: var(--ink);
   border-bottom-color: var(--brass);
 }
+.result-tab .tab-count {
+  font-weight: 400;
+  font-size: 0.85em;
+  margin-inline-start: 4px;
+  opacity: 0.7;
+}
+.result-tab .tab-count:empty { display: none; }
 
 @media (max-width: 760px) {
   .shell { padding: 18px 14px 60px; }
@@ -769,12 +776,17 @@ ul.milog-idiom-list li:hover .milog-phrase-head { color: var(--brass); }
   input[type="text"] { min-width: 0; padding: 12px; font-size: 1.1rem; }
   button.kb-toggle { min-width: 44px; }
   button.go { padding: 0 14px; }
-
-  /* Two or more dictionaries on: show the tab bar and only the active column */
-  #result-tabs.on { display: flex; }
-  .dict-columns.tabs-on .dict-column:not(.active-tab) { display: none; }
-  /* The tab already names the dictionary, and the page scrolls normally */
-  .dict-columns.tabs-on .dict-column-header { display: none; }
-  .dict-columns.tabs-on .dict-results { max-height: none; overflow-y: visible; padding-inline-end: 0; }
 }
 
+/* Tab mode: one dictionary at a time, switched with the tab bar. app.js puts the
+   "tab-mode" class on <html> on phones (either orientation) and in narrow windows.
+   It's a class rather than a media query because iOS Safari can widen the layout
+   viewport when a page overflows sideways, which would make a max-width query stop
+   matching and bring the side-by-side columns back. */
+html.tab-mode #result-tabs.on { display: flex; }
+html.tab-mode .dict-columns.tabs-on { grid-template-columns: 1fr; max-width: none; }
+html.tab-mode .dict-columns.tabs-on .dict-column:not(.active-tab) { display: none; }
+/* The tab already names the dictionary, and the page scrolls normally */
+html.tab-mode .dict-columns.tabs-on .dict-column-header { display: none; }
+/* Anything too wide for the screen scrolls inside its own box instead of stretching the page */
+html.tab-mode .dict-columns.tabs-on .dict-results { max-height: none; overflow-x: auto; overflow-y: visible; padding-inline-end: 0; }

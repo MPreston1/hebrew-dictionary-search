@@ -169,7 +169,15 @@
     }
   });
 
+  // The number shown in a phone-width tab next to the dictionary's name.
+  // Empty (not 0) when there's nothing to count.
+  function setTabCount(dict, n) {
+    const el = document.getElementById("tabcount-" + dict);
+    if (el) el.textContent = n ? String(n) : "";
+  }
+
   function resetMorfixColumn() {
+    setTabCount("morfix", 0);
     state.morfix.lastResult = null;
     state.morfix.lastRaw = null;
     els.statusMorfix.textContent = "";
@@ -180,6 +188,7 @@
   }
 
   function resetPealimColumn() {
+    setTabCount("pealim", 0);
     state.pealim.lastResult = null;
     state.pealim.lastRawHtml = null;
     els.statusPealim.textContent = "";
@@ -190,6 +199,7 @@
   }
 
   function resetMilogColumn() {
+    setTabCount("milog", 0);
     state.milog.lastResult = null;
     state.milog.lastRawHtml = null;
     els.statusMilog.textContent = "";
@@ -224,6 +234,19 @@
     if (!state.enabled.pealim) resetPealimColumn();
     if (!state.enabled.milog) resetMilogColumn();
   }
+
+  // Tab mode (one dictionary at a time, switched with tabs) is for phones in either
+  // orientation and for narrow windows. A phone is a touch screen whose physical screen is
+  // small; screen.width/height don't change when iOS widens the page, unlike the layout width.
+  function updateTabMode() {
+    const narrow = window.matchMedia("(max-width: 760px)").matches;
+    const phone = window.matchMedia("(pointer: coarse)").matches &&
+      Math.min(window.screen.width, window.screen.height) <= 600;
+    document.documentElement.classList.toggle("tab-mode", narrow || phone);
+  }
+  updateTabMode();
+  window.addEventListener("resize", updateTabMode);
+  window.addEventListener("orientationchange", updateTabMode);
 
   // At least one dictionary always stays pressed.
   function toggleDict(which) {
@@ -550,6 +573,7 @@
   }
 
   function renderMorfix(result) {
+    setTabCount("morfix", result.matched ? result.entries.length : 0);
     if (result.matched && result.entries.length) {
       els.resultsMorfix.innerHTML = result.entries.map(morfixEntryCardHtml).join("");
     } else if (result.corrections.length) {
@@ -566,6 +590,7 @@
   }
 
   async function doMorfixSearch(word, { forceRefresh = false } = {}) {
+    setTabCount("morfix", 0);
     els.statusMorfix.textContent = "Searching…";
     els.statusMorfix.classList.remove("error");
     els.refreshMorfix.hidden = true;
@@ -1432,6 +1457,7 @@
   }
 
   function renderPealim(result) {
+    setTabCount("pealim", result.entries.length);
     if (result.entries.length) {
       els.resultsPealim.innerHTML = result.entries.map((e, i) => pealimEntryCardHtml(e, i)).join("");
     } else {
@@ -1558,6 +1584,7 @@
   });
 
   async function doPealimSearch(word, { forceRefresh = false } = {}) {
+    setTabCount("pealim", 0);
     els.statusPealim.textContent = "Searching…";
     els.statusPealim.classList.remove("error");
     els.refreshPealim.hidden = true;
@@ -1870,6 +1897,7 @@
   }
 
   function renderMilog(result) {
+    setTabCount("milog", result.found ? result.wordEntries.length : 0);
     if (!result.found) {
       els.resultsMilog.innerHTML = `<div class="empty-state">No results for "${escapeHtml(result.query)}".</div>`;
       return;
@@ -1953,6 +1981,7 @@
   }
 
   async function doMilogSearch(word, { forceRefresh = false } = {}) {
+    setTabCount("milog", 0);
     els.statusMilog.textContent = "Searching…";
     els.statusMilog.classList.remove("error");
     els.refreshMilog.hidden = true;
